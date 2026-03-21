@@ -39,14 +39,20 @@ def apply_rhythm_ping(
     weight: float,
     delta_t: float,
     cfg: "MatchConfig",
+    time_bin: str = "",
 ) -> dict[str, float]:
     """
     Decay V_rhythm then add a new rhythm ping.
 
+    Dimension key: "cluster_id|time_bin" when time_bin is set,
+                   "cluster_id" for legacy/no-time-bin paths.
+
     V_rhythm[k](t) = V_rhythm[k](t-1) · exp(-λ_rhythm · Δt) + weight
     """
+    from matching_engine.models.ping import make_dimension_key
     V = decay_stream(V_rhythm, delta_t, cfg.lambda_rhythm)
-    V[cluster_id] = V.get(cluster_id, 0.0) + weight
+    dim_key = make_dimension_key(cluster_id, time_bin)
+    V[dim_key] = V.get(dim_key, 0.0) + weight
     return V
 
 
@@ -58,23 +64,29 @@ def apply_identity_ping(
     cfg: "MatchConfig",
     cluster: Optional["LocationCluster"] = None,
     pins: Optional[dict[str, "PinnedWeight"]] = None,
+    time_bin: str = "",
 ) -> dict[str, float]:
     """
     Decay V_identity then add a new identity ping, with pinning logic.
 
     For event clusters (activation_days ≤ 7), the peak weight is pinned
     at pin_floor for pin_duration_days to prevent seasonal washout.
+
+    Pins are keyed by the full dimension key so that time-bucketed identity
+    events are pinned independently.
     """
+    from matching_engine.models.ping import make_dimension_key
     V = decay_stream(V_identity, 0, cfg.lambda_identity)  # decay handled externally
-    new_val = V.get(cluster_id, 0.0) + weight
-    V[cluster_id] = new_val
+    dim_key = make_dimension_key(cluster_id, time_bin)
+    new_val = V.get(dim_key, 0.0) + weight
+    V[dim_key] = new_val
 
     # Apply identity pin for concentrated events
     if cluster is not None and pins is not None:
         from matching_engine.models.user import PinnedWeight
         is_event_cluster = cluster.is_event or cluster.activation_days <= 7
         if is_event_cluster:
-            pins[cluster_id] = PinnedWeight(
+            pins[dim_key] = PinnedWeight(
                 peak_weight=new_val,
                 pinned_at=t_ping,
                 pin_duration=cfg.pin_duration_days,

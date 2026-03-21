@@ -2,6 +2,14 @@
 similarity/match.py
 ===================
 Adaptive weights and holistic match scoring.
+
+v5.0 — Updated G formula:
+    G = w_rhythm     · cos(V_rhythm_A,   V_rhythm_B)
+      + w_identity   · cos(V_identity_A, V_identity_B)
+      + w_log        · proximity(avg_commute)
+      + w_bio        · bio_similarity(tags_A, tags_B)
+      + w_edge       · edge_similarity(E_A, E_B)
+      + w_copresence · co_presence(A, B)
 """
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ if TYPE_CHECKING:
 
 from matching_engine.models.results import WeightSet, MatchResult
 from matching_engine.similarity.vectors import cosine_sparse, bio_similarity
+from matching_engine.similarity.transitions import edge_similarity
 from matching_engine.similarity.proximity import proximity_score
 
 
@@ -37,7 +46,7 @@ def adaptive_weights(
     cfg: "MatchConfig",
 ) -> WeightSet:
     """
-    Compute the four-way adaptive weight set for a matched pair.
+    Compute the six-way adaptive weight set for a matched pair.
 
     Uses pair-effective ping counts:
         n_r_eff = min(n_rhythm_A, n_rhythm_B)
@@ -47,7 +56,9 @@ def adaptive_weights(
         w_bio(n_total)  = w_bio_max · exp(-μ_bio · n_total)
         w_identity(n_i) = w_identity_max · (1 - exp(-μ_id · n_i_eff))
         w_log           = fixed (cfg.w_log_fixed)
-        w_rhythm        = 1 - w_log - w_bio - w_identity  (residual)
+        w_edge          = fixed (cfg.w_edge_fixed)
+        w_copresence    = fixed (cfg.w_copresence_fixed)
+        w_rhythm        = residual after all other weights
 
     Returns
     -------
@@ -57,20 +68,24 @@ def adaptive_weights(
     n_i_eff = min(user_a.n_identity, user_b.n_identity)
     n_total = n_r_eff + n_i_eff
 
-    w_bio      = cfg.w_bio_max * math.exp(-cfg.mu_bio * n_total)
-    w_identity = cfg.w_identity_max * (1.0 - math.exp(-cfg.mu_identity * n_i_eff))
-    w_log      = cfg.w_log_fixed
-    w_rhythm   = max(0.0, 1.0 - w_log - w_bio - w_identity)
+    w_bio        = cfg.w_bio_max * math.exp(-cfg.mu_bio * n_total)
+    w_identity   = cfg.w_identity_max * (1.0 - math.exp(-cfg.mu_identity * n_i_eff))
+    w_log        = cfg.w_log_fixed
+    w_edge       = cfg.w_edge_fixed
+    w_copresence = cfg.w_copresence_fixed
+    w_rhythm     = max(0.0, 1.0 - w_log - w_bio - w_identity - w_edge - w_copresence)
 
     # Renormalise to guarantee sum = 1.0
-    total = w_rhythm + w_identity + w_log + w_bio
+    total = w_rhythm + w_identity + w_log + w_bio + w_edge + w_copresence
     return WeightSet(
-        w_rhythm=   round(w_rhythm   / total, 8),
-        w_identity= round(w_identity / total, 8),
-        w_log=      round(w_log      / total, 8),
-        w_bio=      round(w_bio      / total, 8),
-        n_r_eff=    n_r_eff,
-        n_i_eff=    n_i_eff,
+        w_rhythm=     round(w_rhythm     / total, 8),
+        w_identity=   round(w_identity   / total, 8),
+        w_log=        round(w_log        / total, 8),
+        w_bio=        round(w_bio        / total, 8),
+        w_edge=       round(w_edge       / total, 8),
+        w_copresence= round(w_copresence / total, 8),
+        n_r_eff=      n_r_eff,
+        n_i_eff=      n_i_eff,
     )
 
 
@@ -80,23 +95,26 @@ def match_users(
     registry: "ClusterRegistry",
     cfg: "MatchConfig",
     sigma: Optional[float] = None,
+    copresence_score: float = 0.0,
 ) -> MatchResult:
     """
     Compute the holistic match score G(A, B).
 
-    G = w_rhythm   · Sim_rhythm(A, B)
-      + w_identity · Sim_identity(A, B)
-      + w_log      · Sim_log(d)
-      + w_bio      · Sim_prior(A, B)
+    G = w_rhythm     · cos(V_rhythm_A,   V_rhythm_B)
+      + w_identity   · cos(V_identity_A, V_identity_B)
+      + w_log        · proximity(avg_commute)
+      + w_bio        · bio_similarity(tags_A, tags_B)
+      + w_edge       · edge_similarity(E_A, E_B)
+      + w_copresence · copresence_score
 
     Parameters
     ----------
-    user_a, user_b : UserProfile
-    registry : ClusterRegistry
-        Provides the IDF snapshot for normalisation.
-    cfg : MatchConfig
-    sigma : float | None
-        City-specific proximity sigma. Defaults to cfg.default_sigma.
+    user_a, user_b     : UserProfile
+    registry           : ClusterRegistry — provides IDF snapshot
+    cfg                : MatchConfig
+    sigma              : city-specific proximity sigma (default cfg.default_sigma)
+    copresence_score   : pre-computed co-presence signal ∈ [0, 1]
+                         from the Bloom filter intersection module
 
     Returns
     -------
@@ -106,28 +124,34 @@ def match_users(
     weights = adaptive_weights(user_a, user_b, cfg)
     idf     = registry.idf_snapshot
 
-    sim_rhythm   = cosine_sparse(user_a.V_rhythm,   user_b.V_rhythm,   idf)
-    sim_identity = cosine_sparse(user_a.V_identity, user_b.V_identity, idf)
-    sim_prior    = bio_similarity(user_a.tags, user_b.tags)
+    sim_rhythm      = cosine_sparse(user_a.V_rhythm,   user_b.V_rhythm,   idf)
+    sim_identity    = cosine_sparse(user_a.V_identity, user_b.V_identity, idf)
+    sim_prior       = bio_similarity(user_a.tags, user_b.tags)
+    sim_edge        = edge_similarity(user_a.E, user_b.E, idf_map=idf)
+    sim_copresence  = float(min(max(copresence_score, 0.0), 1.0))
 
     avg_commute = (user_a.home_base_commute + user_b.home_base_commute) / 2.0
     sim_prox    = proximity_score(avg_commute, sigma=_sigma)
 
     G = (
-        weights.w_rhythm   * sim_rhythm
-        + weights.w_identity * sim_identity
-        + weights.w_log      * sim_prox
-        + weights.w_bio      * sim_prior
+        weights.w_rhythm     * sim_rhythm
+        + weights.w_identity   * sim_identity
+        + weights.w_log        * sim_prox
+        + weights.w_bio        * sim_prior
+        + weights.w_edge       * sim_edge
+        + weights.w_copresence * sim_copresence
     )
 
     return MatchResult(
-        user_a_id=    user_a.user_id,
-        user_b_id=    user_b.user_id,
-        G=            float(min(max(G, 0.0), 1.0)),
-        sim_rhythm=   sim_rhythm,
-        sim_identity= sim_identity,
-        sim_prox=     sim_prox,
-        sim_prior=    sim_prior,
-        weights=      weights,
-        phase=        _match_phase(weights.n_r_eff, weights.n_i_eff),
+        user_a_id=      user_a.user_id,
+        user_b_id=      user_b.user_id,
+        G=              float(min(max(G, 0.0), 1.0)),
+        sim_rhythm=     sim_rhythm,
+        sim_identity=   sim_identity,
+        sim_prox=       sim_prox,
+        sim_prior=      sim_prior,
+        sim_edge=       sim_edge,
+        sim_copresence= sim_copresence,
+        weights=        weights,
+        phase=          _match_phase(weights.n_r_eff, weights.n_i_eff),
     )

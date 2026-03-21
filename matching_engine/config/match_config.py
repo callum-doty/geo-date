@@ -95,6 +95,32 @@ class MatchConfig:
     # Proximity
     default_sigma:          float = 25.0
 
+    # ── Spatiotemporal Behavioral Indexing ────────────────────────────────────
+    # H3 resolution per stream
+    h3_resolution_identity: int   = 10    # ~15 m — fine venue specificity
+    h3_resolution_rhythm:   int   = 8     # ~460 m — neighbourhood pattern
+
+    # Time binning: 3-hour blocks × weekday/weekend = 16 bins
+    # Bins: WD_0..WD_7 (Mon–Fri) and WE_0..WE_7 (Sat–Sun)
+    time_bin_hours:         int   = 3
+
+    # Cluster versioning
+    cluster_version:        int   = 1
+
+    # ── Transition Matrix ─────────────────────────────────────────────────────
+    lambda_transition:      float = 0.04  # per day (~17-day half-life)
+    transition_window_hours: float = 4.0  # max gap to record a transition
+
+    # ── Adaptive match weights — edge and co-presence ─────────────────────────
+    # These are fixed contributions (like w_log_fixed) subtracted from the
+    # residual before rhythm takes the remainder.
+    w_edge_fixed:           float = 0.08  # transition similarity contribution
+    w_copresence_fixed:     float = 0.05  # co-presence signal contribution
+
+    # ── Bloom Filter (co-occurrence tokens) ───────────────────────────────────
+    bloom_capacity:         int   = 2000  # expected insertions per user window
+    bloom_error_rate:       float = 0.01  # target false-positive rate
+
     # ── Bayesian Suitability ──────────────────────────────────────────────────
     beta_suitability:       float = 0.02
 
@@ -211,8 +237,11 @@ class MatchConfig:
         assert self.lambda_identity >= 0,      "lambda_identity must be non-negative"
         assert 0 < self.pin_floor < 1,         "pin_floor must be in (0,1)"
         assert self.pin_duration_days > 0,     "pin_duration_days must be positive"
-        total_max = self.w_log_fixed + self.w_bio_max + self.w_identity_max
-        assert total_max <= 1.05,              "w_log + w_bio_max + w_identity_max should be ≤ 1"
+        assert self.w_log_fixed >= 0,          "w_log_fixed must be non-negative"
+        assert 0 < self.w_bio_max <= 1,        "w_bio_max must be in (0, 1]"
+        assert 0 < self.w_identity_max <= 1,   "w_identity_max must be in (0, 1]"
+        assert self.w_edge_fixed >= 0,         "w_edge_fixed must be non-negative"
+        assert self.w_copresence_fixed >= 0,   "w_copresence_fixed must be non-negative"
         assert 0 < self.theta < 1,             "theta must be in (0,1)"
         assert self.alpha_rhythm + self.alpha_identity + self.beta <= 1.05, \
             "alpha_r + alpha_i + beta should sum ≤ 1"
@@ -221,6 +250,9 @@ class MatchConfig:
         assert self.venue_min_visits >= 1,     "venue_min_visits must be >= 1"
         assert abs(self.w_temporal + self.w_cooccurrence + self.w_dwell - 1.0) < 1e-6, \
             "w_temporal + w_cooccurrence + w_dwell must sum to 1.0"
+        assert 0 < self.time_bin_hours <= 6,   "time_bin_hours must be in (0, 6]"
+        assert self.bloom_capacity > 0,        "bloom_capacity must be positive"
+        assert 0 < self.bloom_error_rate < 0.5,"bloom_error_rate must be in (0, 0.5)"
         assert 0 <= self.default_category_prior <= 1, \
             "default_category_prior must be in [0,1]"
 

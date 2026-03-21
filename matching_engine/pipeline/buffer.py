@@ -39,9 +39,22 @@ class PendingBuffer:
     def _location_key(lat: float, lng: float, precision: int = 4) -> str:
         """
         Round coordinates to ~11m precision (4 decimal places).
-        Groups pings at the same place into a single buffer entry.
+        Fallback when H3 index is unavailable.
         """
         return f"{round(lat, precision)},{round(lng, precision)}"
+
+    @staticmethod
+    def _key_for_ping(ping: "Ping") -> str:
+        """
+        Derive the buffer key for a ping.
+
+        Preference order:
+          1. H3 r10 index (privacy-preserving, set on-device)
+          2. Rounded lat/lng (legacy fallback for tests / server-side creation)
+        """
+        if ping.h3_r10 is not None:
+            return str(ping.h3_r10)
+        return PendingBuffer._location_key(ping.lat, ping.lng)
 
     def ingest(self, ping: "Ping") -> Optional["BufferedPing"]:
         """
@@ -54,8 +67,8 @@ class PendingBuffer:
         VELOCITY_MIN_GAP_SECS, this ping is treated as transit and dropped.
         """
         from matching_engine.models.ping import BufferedPing
-        
-        key = self._location_key(ping.lat, ping.lng)
+
+        key = self._key_for_ping(ping)
 
         if key not in self._buffer:
             self._buffer[key] = BufferedPing(location_key=key,

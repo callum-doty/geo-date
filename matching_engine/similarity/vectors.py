@@ -9,6 +9,17 @@ from __future__ import annotations
 import math
 
 
+def _base_cluster_id(dimension_key: str) -> str:
+    """
+    Extract the cluster_id from a dimension key.
+
+    Handles both formats:
+      New: "cluster_id|WD_2"  → "cluster_id"
+      Legacy: "cluster_id"    → "cluster_id"
+    """
+    return dimension_key.split("|", 1)[0]
+
+
 def idf_normalize_sparse(
     V: dict[str, float],
     idf_map: dict[str, float],
@@ -16,14 +27,21 @@ def idf_normalize_sparse(
     """
     Apply IDF weighting then unit-normalise a sparse vector.
 
-    Step 1 — IDF:   V*[k] = V[k] · IDF(k)
+    Step 1 — IDF:   V*[k] = V[k] · IDF(base_cluster_id(k))
     Step 2 — Norm:  V̂*[k] = V*[k] / ‖V*‖
+
+    Dimension keys may be "cluster_id" (legacy) or "cluster_id|time_bin" (v5).
+    IDF is always looked up on the base cluster_id so that all time-bin
+    dimensions of the same cluster share the same IDF weight.
 
     Result: all components bounded [0, 1], dot product = cosine similarity.
     """
     if not V:
         return {}
-    V_star = {k: v * idf_map.get(k, 0.0) for k, v in V.items() if v > 0}
+    V_star = {
+        k: v * idf_map.get(_base_cluster_id(k), 0.0)
+        for k, v in V.items() if v > 0
+    }
     norm = math.sqrt(sum(v * v for v in V_star.values()))
     if norm < 1e-10:
         return {}

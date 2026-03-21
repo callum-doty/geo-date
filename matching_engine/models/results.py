@@ -13,31 +13,38 @@ from typing import Optional
 
 @dataclass
 class WeightSet:
-    """Four-way adaptive weight output."""
-    w_rhythm:   float
-    w_identity: float
-    w_log:      float
-    w_bio:      float
-    n_r_eff:    int
-    n_i_eff:    int
+    """Six-way adaptive weight output."""
+    w_rhythm:       float
+    w_identity:     float
+    w_log:          float
+    w_bio:          float
+    w_edge:         float = 0.0   # transition similarity
+    w_copresence:   float = 0.0   # co-presence signal
+    n_r_eff:        int   = 0
+    n_i_eff:        int   = 0
 
     def __post_init__(self) -> None:
-        total = self.w_rhythm + self.w_identity + self.w_log + self.w_bio
+        total = (self.w_rhythm + self.w_identity + self.w_log
+                 + self.w_bio + self.w_edge + self.w_copresence)
         if not math.isclose(total, 1.0, abs_tol=1e-4):
             # Renormalise silently to guard float drift
-            self.w_rhythm   /= total
-            self.w_identity /= total
-            self.w_log      /= total
-            self.w_bio      /= total
+            self.w_rhythm       /= total
+            self.w_identity     /= total
+            self.w_log          /= total
+            self.w_bio          /= total
+            self.w_edge         /= total
+            self.w_copresence   /= total
 
     def as_dict(self) -> dict:
         return {
-            "w_rhythm":   round(self.w_rhythm,   4),
-            "w_identity": round(self.w_identity, 4),
-            "w_log":      round(self.w_log,       4),
-            "w_bio":      round(self.w_bio,       4),
-            "n_r_eff":    self.n_r_eff,
-            "n_i_eff":    self.n_i_eff,
+            "w_rhythm":     round(self.w_rhythm,     4),
+            "w_identity":   round(self.w_identity,   4),
+            "w_log":        round(self.w_log,         4),
+            "w_bio":        round(self.w_bio,         4),
+            "w_edge":       round(self.w_edge,        4),
+            "w_copresence": round(self.w_copresence,  4),
+            "n_r_eff":      self.n_r_eff,
+            "n_i_eff":      self.n_i_eff,
         }
 
 
@@ -52,7 +59,9 @@ class MatchResult:
     sim_prox:       float
     sim_prior:      float
     weights:        WeightSet
-    phase:          str     # Discovery / Rhythm-Active / Dual-Stream / Identity-Rich
+    phase:          str           # Discovery / Rhythm-Active / Dual-Stream / Identity-Rich
+    sim_edge:       float = 0.0   # transition matrix similarity
+    sim_copresence: float = 0.0   # co-presence score
 
     def as_dict(self) -> dict:
         return {
@@ -61,10 +70,12 @@ class MatchResult:
             "G": round(self.G, 4),
             "phase": self.phase,
             "components": {
-                "rhythm":   round(self.sim_rhythm,   4),
-                "identity": round(self.sim_identity, 4),
-                "proximity":round(self.sim_prox,     4),
-                "bio_prior":round(self.sim_prior,    4),
+                "rhythm":       round(self.sim_rhythm,      4),
+                "identity":     round(self.sim_identity,    4),
+                "proximity":    round(self.sim_prox,        4),
+                "bio_prior":    round(self.sim_prior,       4),
+                "edge":         round(self.sim_edge,        4),
+                "copresence":   round(self.sim_copresence,  4),
             },
             "weights": self.weights.as_dict(),
         }
